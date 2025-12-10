@@ -55,77 +55,69 @@ class KycFlowPage extends StatefulWidget {
   const KycFlowPage({super.key});
 
   @override
-  State<KycFlowPage> createState() => _KycFlowPageState();
+  State<KycFlowPage> createState() => KycFlowPageState();
 }
 
-class _KycFlowPageState extends State<KycFlowPage> {
-  final ImagePicker _picker = ImagePicker();
+// ... (The code before KycFlowPage remains the same)
 
-  KycStep _currentStep = KycStep.selectDoc;
+class KycFlowPageState extends State<KycFlowPage> {
+  late KycStep _currentStep;
+  late TextEditingController _customerIdController;
+  late TextEditingController _docNumberController;
+  late String _selectedDocType;
+  late XFile? _docImage;
+  late XFile? _selfieImage;
+  late XFile? _liveSelfieImage;
+  late bool _loading;
+  late GlobalKey<FormState> _formKey;
 
-  // state variables
-  String? _kycId;
-  String? _selectedDocType;
-
-  final _formKey = GlobalKey<FormState>();
-
-  final TextEditingController _customerIdController =
-      TextEditingController(text: 'CUST123');
-  final TextEditingController _docNumberController = TextEditingController();
-
-  XFile? _docImage;
-  XFile? _selfieImage;
-  XFile? _liveSelfieImage;
-
-  bool _loading = false;
-  String? _statusMessage;
-  String? _kycStatus; // IN_PROGRESS / APPROVED / REJECTED
-  String? _rejectionReason;
-
-  // ---------- Helpers ----------
-
-  void _showSnack(String msg, {Color? color}) {
-    final snack = SnackBar(
-      content: Text(msg),
-      backgroundColor: color,
-    );
-    ScaffoldMessenger.of(context).showSnackBar(snack);
+  @override
+  void initState() {
+    super.initState();
+    _currentStep = KycStep.selectDoc;
+    _customerIdController = TextEditingController();
+    _docNumberController = TextEditingController();
+    _selectedDocType = 'AADHAAR';
+    _docImage = null;
+    _selfieImage = null;
+    _liveSelfieImage = null;
+    _loading = false;
+    _formKey = GlobalKey<FormState>();
   }
 
-  Future<XFile?> _pick(ImageSource src, {int quality = 80}) async {
-    try {
-      final XFile? file = await _picker.pickImage(
-        source: src,
-        imageQuality: quality,
-      );
-      return file;
-    } catch (e) {
-      _showSnack('Image pick error: $e');
-      return null;
-    }
+  @override
+  void dispose() {
+    _customerIdController.dispose();
+    _docNumberController.dispose();
+    super.dispose();
+  }
+
+  void setStateIfMounted(VoidCallback fn) {
+    if (mounted) setState(fn);
+  }
+
+  void _showSnack(String msg, [bool error = false]) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: error ? Colors.red : Colors.green,
+      ),
+    );
   }
 
   Future<void> _pickImageForDoc() async {
-    final file = await _pick(ImageSource.camera);
-    if (file == null) return;
+    final file = await ImagePicker().pickImage(source: ImageSource.camera);
     setStateIfMounted(() => _docImage = file);
   }
 
   Future<void> _pickSelfie() async {
-    final file = await _pick(ImageSource.camera);
-    if (file == null) return;
+    final file = await ImagePicker().pickImage(source: ImageSource.camera);
     setStateIfMounted(() => _selfieImage = file);
   }
 
   Future<void> _pickLiveSelfie() async {
-    final file = await _pick(ImageSource.camera);
-    if (file == null) return;
+    final file = await ImagePicker().pickImage(source: ImageSource.camera);
     setStateIfMounted(() => _liveSelfieImage = file);
-  }
-
-  void setStateIfMounted(VoidCallback fn) {
-    if (!mounted) return;
-    setState(fn);
   }
 
   Future<void> _startKyc() async {
@@ -134,191 +126,232 @@ class _KycFlowPageState extends State<KycFlowPage> {
       return;
     }
     if (!_formKey.currentState!.validate()) return;
-
-    setStateIfMounted(() {
-      _loading = true;
-      _statusMessage = null;
-      _kycStatus = null;
-      _rejectionReason = null;
-    });
-
-    final body = jsonEncode({
-      "customer_id": _customerIdController.text.trim(),
-      "doc_type": _selectedDocType,
-    });
-
+    setStateIfMounted(() => _loading = true);
     try {
-      final uri = Uri.parse('$baseUrl/kyc/start');
-      final resp = await http.post(
-        uri,
-        headers: {"Content-Type": "application/json"},
-        body: body,
+      final response = await http.post(
+        Uri.parse('$baseUrl/kyc/start'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'customer_id': _customerIdController.text,
+          'doc_type': _selectedDocType
+        }),
       );
-
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        setStateIfMounted(() {
-          _kycId = data['kyc_id'] ?? data['id'] ?? 'N/A';
-          _currentStep = KycStep.uploadDoc;
-          _statusMessage = data['message'] ?? 'KYC started';
-        });
-        _showSnack('KYC started (ID: $_kycId)');
+      if (response.statusCode == 200) {
+        setStateIfMounted(() => _currentStep = KycStep.uploadDoc);
+        _showSnack('KYC started successfully');
       } else {
-        String msg = 'Error: ${resp.statusCode}';
-        try {
-          final data = jsonDecode(resp.body);
-          msg = data['detail'] ?? data['message'] ?? resp.body;
-        } catch (_) {}
-        _showSnack(msg, color: Colors.redAccent);
+        _showSnack('Failed to start KYC', true);
       }
     } catch (e) {
-      _showSnack('Network error: $e', color: Colors.redAccent);
-    } finally {
-      setStateIfMounted(() => _loading = false);
-    }
-  }
-
-  Future<void> _uploadFile(String pathKey, XFile file,
-      {required String endpoint, Map<String, String>? extraFields}) async {
-    if (_kycId == null) {
-      _showSnack('KYC not started yet');
-      return;
-    }
-
-    setStateIfMounted(() {
-      _loading = true;
-      _statusMessage = null;
-    });
-
-    try {
-      final uri = Uri.parse('$baseUrl$endpoint');
-      final request = http.MultipartRequest('POST', uri);
-      request.fields['kyc_id'] = _kycId!;
-      if (extraFields != null) request.fields.addAll(extraFields);
-      request.files.add(await http.MultipartFile.fromPath(pathKey, file.path,
-          filename: file.name));
-
-      final streamed = await request.send();
-      final resp = await http.Response.fromStream(streamed);
-
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        _showSnack(data['message'] ?? 'Uploaded successfully',
-            color: Colors.green);
-      } else {
-        String msg = 'Upload error ${resp.statusCode}';
-        try {
-          final data = jsonDecode(resp.body);
-          msg = data['detail'] ?? data['message'] ?? resp.body;
-        } catch (_) {}
-        _showSnack(msg, color: Colors.redAccent);
-      }
-    } catch (e) {
-      _showSnack('Upload failed: $e', color: Colors.redAccent);
+      _showSnack('Error: $e', true);
     } finally {
       setStateIfMounted(() => _loading = false);
     }
   }
 
   Future<void> _uploadDocument() async {
-    if (_kycId == null) return _showSnack('KYC not started yet');
-    if (_docImage == null)
-      return _showSnack('Please capture the document image');
-    if (_docNumberController.text.trim().isEmpty)
-      return _showSnack('Enter document number');
-
-    await _uploadFile('file', _docImage!,
-        endpoint: '/kyc/upload-document',
-        extraFields: {'doc_number': _docNumberController.text.trim()});
-
-    // move to next step if upload succeeded (simple optimistic UX)
-    if (!mounted) return;
-    setState(() {
-      _currentStep = KycStep.uploadSelfie;
-    });
-  }
-
-  Future<void> _uploadSelfie() async {
-    if (_kycId == null) return _showSnack('KYC not started yet');
-    if (_selfieImage == null) return _showSnack('Please capture a selfie');
-
-    await _uploadFile('file', _selfieImage!, endpoint: '/kyc/upload-selfie');
-    if (!mounted) return;
-    setState(() {
-      _currentStep = KycStep.uploadLiveSelfie;
-    });
-  }
-
-  Future<void> _uploadLiveSelfie() async {
-    if (_kycId == null) return _showSnack('KYC not started yet');
-    if (_liveSelfieImage == null)
-      return _showSnack('Please capture a live selfie');
-
-    await _uploadFile('file', _liveSelfieImage!,
-        endpoint: '/kyc/upload-live-selfie');
-
-    if (!mounted) return;
-    setState(() {
-      _currentStep = KycStep.done;
-      _kycStatus = 'IN_PROGRESS';
-      _statusMessage = 'Submitted for verification';
-    });
-  }
-
-  Future<void> _fetchStatus() async {
-    if (_kycId == null) return _showSnack('No KYC ID yet');
-
+    if (_docImage == null) {
+      _showSnack('Please capture document image', true);
+      return;
+    }
     setStateIfMounted(() => _loading = true);
-
     try {
-      final uri = Uri.parse('$baseUrl/kyc/status/$_kycId');
-      final resp = await http.get(uri);
+      final request = http.MultipartRequest(
+          'POST', Uri.parse('$baseUrl/kyc/upload_document'))
+        ..files
+            .add(await http.MultipartFile.fromPath('document', _docImage!.path))
+        ..fields['customer_id'] = _customerIdController.text
+        ..fields['doc_number'] = _docNumberController.text;
 
-      if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        setStateIfMounted(() {
-          _kycStatus = data['status'];
-          _rejectionReason = data['rejection_reason'];
-          _statusMessage = data['message'] ?? _statusMessage;
-        });
+      final response = await request.send();
+      if (response.statusCode == 200) {
+        setStateIfMounted(() => _currentStep = KycStep.uploadSelfie);
+        _showSnack('Document uploaded successfully');
       } else {
-        String msg = 'Status error ${resp.statusCode}';
-        try {
-          final data = jsonDecode(resp.body);
-          msg = data['detail'] ?? data['message'] ?? resp.body;
-        } catch (_) {}
-        _showSnack(msg);
+        _showSnack('Failed to upload document', true);
       }
     } catch (e) {
-      _showSnack('Network error: $e');
+      _showSnack('Error: $e', true);
     } finally {
       setStateIfMounted(() => _loading = false);
     }
   }
 
-  // ---------- UI builders ----------
+  Future<void> _uploadSelfie() async {
+    if (_selfieImage == null) {
+      _showSnack('Please capture selfie', true);
+      return;
+    }
+    setStateIfMounted(() => _loading = true);
+    try {
+      final request =
+          http.MultipartRequest('POST', Uri.parse('$baseUrl/kyc/upload_selfie'))
+            ..files.add(
+                await http.MultipartFile.fromPath('selfie', _selfieImage!.path))
+            ..fields['customer_id'] = _customerIdController.text;
+
+      final response = await request.send();
+      if (response.statusCode == 200) {
+        setStateIfMounted(() => _currentStep = KycStep.uploadLiveSelfie);
+        _showSnack('Selfie uploaded successfully');
+      } else {
+        _showSnack('Failed to upload selfie', true);
+      }
+    } catch (e) {
+      _showSnack('Error: $e', true);
+    } finally {
+      setStateIfMounted(() => _loading = false);
+    }
+  }
+
+  Future<void> _uploadLiveSelfie() async {
+    if (_liveSelfieImage == null) {
+      _showSnack('Please capture live selfie', true);
+      return;
+    }
+    setStateIfMounted(() => _loading = true);
+
+    try {
+      final request = http.MultipartRequest(
+          'POST', Uri.parse('$baseUrl/kyc/upload_live_selfie'))
+        ..files.add(await http.MultipartFile.fromPath(
+            'live_selfie', _liveSelfieImage!.path))
+        ..fields['customer_id'] = _customerIdController.text;
+
+      final response = await request.send();
+      if (response.statusCode == 200) {
+        setStateIfMounted(() => _currentStep = KycStep.done);
+        _showSnack('KYC completed successfully');
+      } else {
+        _showSnack('Failed to upload live selfie', true);
+      }
+    } catch (e) {
+      _showSnack('Error: $e', true);
+    } finally {
+      setStateIfMounted(() => _loading = false);
+    }
+  }
 
   Widget _statusChip() {
-    final status = _kycStatus?.toUpperCase() ?? 'N/A';
-    Color color = Colors.grey;
-    if (status == 'APPROVED') color = Colors.green;
-    if (status == 'REJECTED') color = Colors.red;
-    if (status == 'IN_PROGRESS') color = Colors.orange;
-
+    final statusText =
+        _currentStep == KycStep.done ? 'Completed' : 'In Progress';
     return Chip(
-      label: Text(status),
-      backgroundColor: color.withOpacity(0.12),
-      avatar: Icon(
-        status == 'APPROVED'
-            ? Icons.check_circle
-            : status == 'REJECTED'
-                ? Icons.cancel
-                : Icons.hourglass_top,
-        color: color,
+      label: Text(statusText),
+      backgroundColor: _currentStep == KycStep.done
+          ? Colors.green.shade100
+          : Colors.orange.shade100,
+      labelStyle: TextStyle(
+        color: _currentStep == KycStep.done ? Colors.green : Colors.orange,
+        fontWeight: FontWeight.bold,
       ),
     );
   }
 
+  Widget _sectionCard({required Widget child}) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: child,
+      ),
+    );
+  }
+
+  Widget _buildDoneStep() {
+    return _sectionCard(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.check_circle, size: 80, color: Colors.green),
+          const SizedBox(height: 20),
+          const Text('KYC Verification Complete!',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text('Your identity has been successfully verified.',
+              style: TextStyle(color: Colors.black54)),
+          const SizedBox(height: 24),
+          FilledButton(
+            onPressed: () => setStateIfMounted(() {
+              _currentStep = KycStep.selectDoc;
+              _customerIdController.clear();
+              _docNumberController.clear();
+              _docImage = null;
+              _selfieImage = null;
+              _liveSelfieImage = null;
+            }),
+            child: const Text('Start New KYC'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // New map for step details and icons
+  final Map<KycStep, Map<String, dynamic>> _stepDetails = {
+    KycStep.selectDoc: {
+      'title': '1. Select Document',
+      'icon': Icons.description_rounded,
+    },
+    KycStep.uploadDoc: {
+      'title': '2. Scan Document',
+      'icon': Icons.camera_alt_rounded,
+    },
+    KycStep.uploadSelfie: {
+      'title': '3. Upload Selfie',
+      'icon': Icons.face_retouching_natural_rounded,
+    },
+    KycStep.uploadLiveSelfie: {
+      'title': '4. Live Liveness Check',
+      'icon': Icons.video_call_rounded,
+    },
+    KycStep.done: {
+      'title': '5. Verification Complete',
+      'icon': Icons.check_circle_outline_rounded,
+    },
+  };
+
+  // ... (Existing helper methods like _showSnack, _pick, setStateIfMounted, and API methods)
+
+  // --- Start of modified UI builders ---
+
+  // 1. New Custom Step Indicator Widget
+  Widget _stepIndicator(KycStep step, int index) {
+    final bool isActive = step == _currentStep;
+    final bool isDone = step.index < _currentStep.index;
+    final iconData = _stepDetails[step]!['icon'] as IconData;
+    final String title = _stepDetails[step]!['title'] as String;
+    final Color color = isDone
+        ? Colors.green.shade600
+        : isActive
+            ? Colors.indigo
+            : Colors.grey.shade400;
+
+    return Expanded(
+      child: Column(
+        children: [
+          CircleAvatar(
+            radius: 18,
+            backgroundColor: color.withOpacity(0.15),
+            child: isDone
+                ? Icon(Icons.check, size: 20, color: color)
+                : Icon(iconData, size: 20, color: color),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            title.split('. ')[1], // Use only the main part of the title
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
+              color: isActive ? Colors.indigo.shade900 : Colors.black54,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 2. Refactored Top Progress Bar
+  @override
   Widget _buildTopProgress() {
     final stepIndex = _currentStep.index;
     return Column(
@@ -333,7 +366,8 @@ class _KycFlowPageState extends State<KycFlowPage> {
                 const Text('Digital KYC Journey',
                     style:
                         TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                Text('Step ${stepIndex + 1} of ${KycStep.values.length}',
+                Text(
+                    '${_stepDetails[_currentStep]!['title']}', // Show current step title
                     style: const TextStyle(color: Colors.black54)),
               ],
             ),
@@ -341,100 +375,86 @@ class _KycFlowPageState extends State<KycFlowPage> {
           ],
         ),
         const SizedBox(height: 12),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: LinearProgressIndicator(
-            value: (stepIndex + 1) / (KycStep.values.length),
-            minHeight: 10,
-            backgroundColor: Colors.indigo.withOpacity(0.08),
-          ),
+        // Custom Step-by-Step Indicator
+        Row(
+          children: KycStep.values
+              .map((step) => _stepIndicator(step, step.index))
+              .toList(),
         ),
+        // Divider line between steps (can be removed if step circles are enough)
+        // const Divider(),
       ],
     );
   }
 
-  Widget _heroCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        gradient: const LinearGradient(
-          colors: [Color(0xFF5B7BFF), Color(0xFF7BD6FF)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+  // 3. Image Preview Enhancements
+  Widget _previewTile(String title, XFile? file) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
         ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: const [
-                Text('Verify in minutes',
-                    style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700)),
-                SizedBox(height: 6),
-                Text(
-                  'Scan documents, snap selfies, and track status with a guided flow.',
-                  style: TextStyle(color: Colors.white70),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          height: 150,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color: file == null
+                ? Colors.indigo.withOpacity(0.08)
+                : Colors.grey.shade200,
+            border: Border.all(
+              color:
+                  file == null ? Colors.indigo.withOpacity(0.3) : Colors.green,
+              width: file == null ? 1 : 2,
+            ),
+          ),
+          child: file == null
+              ? Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.image_search,
+                        color: Colors.black45, size: 40),
+                    const SizedBox(height: 8),
+                    Text('No image selected',
+                        style: TextStyle(color: Colors.black54)),
+                  ],
+                )
+              : ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(
+                    File(file.path),
+                    fit: BoxFit.cover,
+                    //  // Image Tag for the user's view
+                  ),
+                ),
+        ),
+        if (file != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4.0),
+            child: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.green, size: 16),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'Captured: ${file.name}',
+                    style: const TextStyle(color: Colors.green, fontSize: 12),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(width: 12),
-          Container(
-            height: 88,
-            width: 88,
-            decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.16),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child:
-                const Icon(Icons.verified_user, color: Colors.white, size: 52),
           )
-        ],
-      ),
+      ],
     );
   }
 
-  Widget _sectionCard({required Widget child}) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: child,
-      ),
-    );
-  }
+  // 4. Step Specific UI Overhauls
 
-  Widget _previewTile(String title, XFile? file) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: Container(
-        width: 54,
-        height: 54,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: const Color(0xFFF0F2F8),
-        ),
-        child: file == null
-            ? const Icon(Icons.insert_drive_file, color: Colors.black54)
-            : ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Image.file(File(file.path), fit: BoxFit.cover),
-              ),
-      ),
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: file == null ? const Text('No image yet') : Text(file.name),
-      trailing: file == null
-          ? null
-          : const Icon(Icons.check_circle, color: Colors.green),
-    );
-  }
-
+  @override
   Widget _buildSelectDocStep() {
     return Form(
       key: _formKey,
@@ -442,12 +462,22 @@ class _KycFlowPageState extends State<KycFlowPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Start verification',
+            const Text('Start Verification',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            const Text(
+              'Enter your Customer ID and select the document you wish to use for KYC verification.',
+              style: TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 20),
+            // ... (TextFormField and DropdownButtonFormField remain the same)
+
             TextFormField(
               controller: _customerIdController,
-              decoration: const InputDecoration(labelText: 'Customer ID'),
+              decoration: const InputDecoration(
+                labelText: 'Customer ID',
+                prefixIcon: Icon(Icons.person_outline),
+              ),
               validator: (v) =>
                   v == null || v.trim().isEmpty ? 'Enter Customer ID' : null,
             ),
@@ -460,24 +490,37 @@ class _KycFlowPageState extends State<KycFlowPage> {
                 DropdownMenuItem(value: 'VOTER_ID', child: Text('Voter ID')),
                 DropdownMenuItem(value: 'PASSPORT', child: Text('Passport')),
               ],
-              onChanged: (val) =>
-                  setStateIfMounted(() => _selectedDocType = val),
+              onChanged: (val) {
+                if (val != null) {
+                  setStateIfMounted(() => _selectedDocType = val);
+                }
+              },
               validator: (v) => v == null ? 'Please select a document' : null,
-              decoration:
-                  const InputDecoration(labelText: 'Select KYC Document Type'),
+              decoration: const InputDecoration(
+                labelText: 'Select KYC Document Type',
+                prefixIcon: Icon(Icons.badge_outlined),
+              ),
             ),
-            const SizedBox(height: 16),
+
+            // ... (Rest of the widget remains the same until the end)
+            const SizedBox(height: 24),
             SizedBox(
               width: double.infinity,
               child: FilledButton.icon(
                 onPressed: _loading ? null : _startKyc,
-                icon: const Icon(Icons.rocket_launch),
+                icon: const Icon(Icons.arrow_forward_rounded),
                 label: _loading
                     ? const SizedBox(
                         height: 18,
                         width: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2))
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
                     : const Text('Start KYC'),
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  textStyle: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.bold),
+                ),
               ),
             ),
           ],
@@ -486,40 +529,64 @@ class _KycFlowPageState extends State<KycFlowPage> {
     );
   }
 
+  @override
   Widget _buildUploadDocStep() {
     return SingleChildScrollView(
       child: _sectionCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Step 2: Scan & Upload Document',
+            const Text('Scan & Upload Document',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
+            Text(
+              'Upload a clear, non-blurry image of your selected ${_selectedDocType ?? 'document'}.',
+              style: const TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 20),
+
             TextFormField(
               controller: _docNumberController,
-              decoration: const InputDecoration(labelText: 'Document Number'),
+              decoration: const InputDecoration(
+                  labelText: 'Document Number',
+                  prefixIcon: Icon(Icons.numbers_outlined)),
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                FilledButton.icon(
-                  onPressed: _loading ? null : _pickImageForDoc,
-                  icon: const Icon(Icons.camera_alt),
-                  label: const Text('Scan Document'),
+            const SizedBox(height: 20),
+
+            // Document Preview and Picker
+            _previewTile('Document Image Preview', _docImage
+                //  // Image Tag for best practice
                 ),
-                const SizedBox(width: 12),
-                Expanded(child: _previewTile('Document', _docImage)),
-              ],
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _loading ? null : _pickImageForDoc,
+                icon: const Icon(Icons.camera_alt),
+                label: const Text('Capture Document Image'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.indigo.shade400,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
+
+            const SizedBox(height: 24),
+            // Navigation Buttons
             Row(
               children: [
                 Expanded(
                   child: FilledButton(
                     onPressed: _loading ? null : _uploadDocument,
                     child: _loading
-                        ? const CircularProgressIndicator()
-                        : const Text('Upload Document'),
+                        ? const CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white)
+                        : const Text('Upload & Continue'),
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      textStyle: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -532,6 +599,8 @@ class _KycFlowPageState extends State<KycFlowPage> {
                           });
                         },
                   child: const Text('Back'),
+                  style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16)),
                 )
               ],
             ),
@@ -541,133 +610,124 @@ class _KycFlowPageState extends State<KycFlowPage> {
     );
   }
 
+  @override
   Widget _buildUploadSelfieStep() {
     return _sectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Step 3: Upload Selfie',
+          const Text('Upload Reference Selfie',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              FilledButton.icon(
-                  onPressed: _loading ? null : _pickSelfie,
-                  icon: const Icon(Icons.camera_front),
-                  label: const Text('Capture Selfie')),
-              const SizedBox(width: 12),
-              Expanded(child: _previewTile('Selfie', _selfieImage)),
-            ],
+          const SizedBox(height: 8),
+          const Text(
+            'Capture a clear, recent, frontal photo of your face for reference. No hats or sunglasses.',
+            style: TextStyle(color: Colors.black54),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
+
+          // Selfie Preview and Picker
+          _previewTile('Selfie Preview', _selfieImage
+              //  // Image Tag for best practice
+              ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _loading ? null : _pickSelfie,
+              icon: const Icon(Icons.camera_front),
+              label: const Text('Capture Reference Selfie'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.indigo.shade400,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+          // Navigation Buttons
           Row(children: [
             Expanded(
                 child: FilledButton(
-                    onPressed: _loading ? null : _uploadSelfie,
-                    child: const Text('Upload Selfie'))),
+              onPressed: _loading ? null : _uploadSelfie,
+              child: const Text('Upload & Continue'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                textStyle:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            )),
             const SizedBox(width: 12),
             OutlinedButton(
-                onPressed: _loading
-                    ? null
-                    : () => setStateIfMounted(
-                        () => _currentStep = KycStep.uploadDoc),
-                child: const Text('Back'))
+              onPressed: _loading
+                  ? null
+                  : () =>
+                      setStateIfMounted(() => _currentStep = KycStep.uploadDoc),
+              child: const Text('Back'),
+              style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16)),
+            )
           ])
         ],
       ),
     );
   }
 
+  @override
   Widget _buildUploadLiveSelfieStep() {
     return _sectionCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Step 4: Upload Live Selfie',
+          const Text('Live Liveness Check (Anti-Fraud)',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Row(children: [
-            FilledButton.icon(
-                onPressed: _loading ? null : _pickLiveSelfie,
-                icon: const Icon(Icons.videocam),
-                label: const Text('Capture Live Selfie')),
-            const SizedBox(width: 12),
-            Expanded(child: _previewTile('Live Selfie', _liveSelfieImage)),
-          ]),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
+          const Text(
+            'Capture a "live" selfie or short video to prove you are a real person. Follow any prompts your camera gives.',
+            style: TextStyle(color: Colors.black54),
+          ),
+          const SizedBox(height: 20),
+
+          // Live Selfie Preview and Picker
+          _previewTile('Live Selfie/Video Preview', _liveSelfieImage
+              //  // Image Tag for best practice
+              ),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _loading ? null : _pickLiveSelfie,
+              icon: const Icon(Icons.videocam),
+              label: const Text('Start Liveness Check'),
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.indigo.shade400,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 24),
+          // Navigation Buttons
           Row(children: [
             Expanded(
                 child: FilledButton(
-                    onPressed: _loading ? null : _uploadLiveSelfie,
-                    child: const Text('Upload & Complete KYC'))),
+              onPressed: _loading ? null : _uploadLiveSelfie,
+              child: const Text('Upload & Complete KYC'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                textStyle:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            )),
             const SizedBox(width: 12),
             OutlinedButton(
-                onPressed: _loading
-                    ? null
-                    : () => setStateIfMounted(
-                        () => _currentStep = KycStep.uploadSelfie),
-                child: const Text('Back'))
-          ])
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDoneStep() {
-    return _sectionCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('KYC Status',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          Card(
-            color: Colors.indigo.shade50,
-            child: Padding(
-              padding: const EdgeInsets.all(12.0),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text('KYC ID: ${_kycId ?? "-"}'),
-                          _statusChip()
-                        ]),
-                    const SizedBox(height: 8),
-                    if (_statusMessage != null) Text(_statusMessage!),
-                    if (_rejectionReason != null) ...[
-                      const SizedBox(height: 8),
-                      Text('Reason: $_rejectionReason',
-                          style: const TextStyle(color: Colors.red)),
-                    ]
-                  ]),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Row(children: [
-            FilledButton.icon(
-                onPressed: _loading ? null : _fetchStatus,
-                icon: const Icon(Icons.refresh),
-                label: _loading
-                    ? const CircularProgressIndicator()
-                    : const Text('Refresh Status')),
-            const SizedBox(width: 12),
-            OutlinedButton(
-                onPressed: _loading
-                    ? null
-                    : () {
-                        setStateIfMounted(() {
-                          _currentStep = KycStep.selectDoc;
-                          _kycId = null;
-                          _docImage = null;
-                          _selfieImage = null;
-                          _liveSelfieImage = null;
-                          _kycStatus = null;
-                          _rejectionReason = null;
-                        });
-                      },
-                child: const Text('Start New KYC'))
+              onPressed: _loading
+                  ? null
+                  : () => setStateIfMounted(
+                      () => _currentStep = KycStep.uploadSelfie),
+              child: const Text('Back'),
+              style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16)),
+            )
           ])
         ],
       ),
@@ -676,50 +736,26 @@ class _KycFlowPageState extends State<KycFlowPage> {
 
   @override
   Widget build(BuildContext context) {
-    Widget body;
-
-    switch (_currentStep) {
-      case KycStep.selectDoc:
-        body = _buildSelectDocStep();
-        break;
-      case KycStep.uploadDoc:
-        body = _buildUploadDocStep();
-        break;
-      case KycStep.uploadSelfie:
-        body = _buildUploadSelfieStep();
-        break;
-      case KycStep.uploadLiveSelfie:
-        body = _buildUploadLiveSelfieStep();
-        break;
-      case KycStep.done:
-        body = _buildDoneStep();
-        break;
-    }
-
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Digital KYC Flow'),
+        title: const Text('Digital KYC Verification'),
         centerTitle: true,
         elevation: 0,
-        backgroundColor: Colors.transparent,
-        foregroundColor: Colors.black87,
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
           child: Column(
             children: [
               _buildTopProgress(),
-              const SizedBox(height: 12),
-              _heroCard(),
-              const SizedBox(height: 12),
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: SingleChildScrollView(
-                      key: ValueKey(_currentStep), child: body),
-                ),
-              ),
+              const SizedBox(height: 24),
+              if (_currentStep == KycStep.selectDoc) _buildSelectDocStep(),
+              if (_currentStep == KycStep.uploadDoc) _buildUploadDocStep(),
+              if (_currentStep == KycStep.uploadSelfie)
+                _buildUploadSelfieStep(),
+              if (_currentStep == KycStep.uploadLiveSelfie)
+                _buildUploadLiveSelfieStep(),
+              if (_currentStep == KycStep.done) _buildDoneStep(),
             ],
           ),
         ),
