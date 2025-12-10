@@ -72,6 +72,28 @@ Failure Percentage Bar Graph
 - Better Photo Matching
 - Intelligent Retry Handling
 - Help & Support Guide
+  
+### Tech Stack
+- Mobile client
+
+Flutter — single codebase for Android + iOS, good camera & file APIs.
+
+- Backend
+
+FastAPI (Python) — lightweight, async, easy to build REST endpoints.
+
+- Storage
+
+SQLite (dev) or Postgres (small production) — Postgres if you want ACID & SQL features.
+
+
+- File storage
+
+Local disk for prototype; AWS S3 (or DigitalOcean Spaces) for production.
+
+- CI/CD
+
+GitHub Actions to run tests & deploy.
 
 
 ### Installation
