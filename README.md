@@ -101,24 +101,20 @@ GitHub Actions to run tests & deploy.
 1. Clone the repository
    ```bash
    git clone <repository-url>
-   cd digital_kyc
+   cd Digital_KYC
    ```
 
 2. Install dependencies
    ```bash
-   npm install
-   # or
-   yarn install
+   flutter pub get
    ```
 
 3. Run the development server
    ```bash
-   npm run dev
-   # or
-   yarn dev
+   flutter run
    ```
 
-4. Open [http://localhost:3000](http://localhost:3000) in your browser
+4. Run in Chrome or windows
 
 ---
 
@@ -166,3 +162,4 @@ flowchart LR
   ScanSvc --> Cache[Cache / CDN]
   API --> Monitoring[Monitoring & Logging]
   Admin[Backoffice / Manual Review] --> DB
+
